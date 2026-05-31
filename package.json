@@ -1,0 +1,14 @@
+{
+  "name": "yammbo-blog",
+  "private": true,
+  "description": "CF Worker: daily blog + tutorial publisher to blog.yammbo.com (replaces n8n blog-publish-daily + blog-tutorial-daily)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260101.0",
+    "typescript": "^5.6.0"
+  }
+}

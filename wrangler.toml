@@ -1,0 +1,40 @@
+name = "yammbo-blog"
+main = "src/index.ts"
+account_id = "9334bc9af459f2def598dcf32f9ef322"
+compatibility_date = "2026-01-15"
+compatibility_flags = ["nodejs_compat"]
+
+# Two daily crons (replaces the n8n workflows blog-publish-daily +
+# blog-tutorial-daily):
+#   15:00 UTC -> blog: vertical rotates by weekday (CFG.schedule; Sun/Sat = "top")
+#   21:00 UTC -> tutorials: educational, no brand-swap, LLM-picked CTA product
+# Cutover done 2026-05-31: n8n blogPubDaily01 + blogTutorialDaily01 + imageGenSub01
+# set active=0; this Worker now owns the daily blog + tutorial publishing.
+[triggers]
+crons = ["0 15 * * *", "0 21 * * *"]
+
+# Dedupe state. Single JSON doc under key "blog-publish-daily" holding
+# published_titles[] + published_links[] (cap 2000). Blog AND tutorial share it.
+# Pre-seeded by the parent with the existing 133 titles; bootstrap from SEED only
+# runs if the doc is empty.
+[[kv_namespaces]]
+binding = "BLOG_DEDUPE"
+id = "0401f65b617d4cc492eccbb1ecc6da5f"
+
+[vars]
+# Gemini text rewrite (verified from the n8n "Call Gemini" HTTP node).
+GEMINI_MODEL = "gemini-2.5-flash"
+# Cover image: Gemini 2.5 Flash Image ("Nano Banana"), :generateContent.
+IMAGE_MODEL = "gemini-2.5-flash-image"
+GITHUB_REPO = "yammbocom/blog.yammbo.com"
+GITHUB_BRANCH = "main"
+TELEGRAM_CHAT_ID = "7906560887"
+
+[observability]
+enabled = true
+
+# Secrets (wrangler secret put):
+# - GEMINI_API_KEY      x-goog-api-key for BOTH Gemini rewrite + Nano Banana cover
+# - GITHUB_TOKEN        Bearer for the Git Data API (repo: yammbocom/blog.yammbo.com)
+# - RUN_KEY             x-run-key auth for POST /run
+# - TELEGRAM_BOT_TOKEN  @yammbo_alerts_bot (error alerts)
