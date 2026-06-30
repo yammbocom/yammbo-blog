@@ -443,8 +443,8 @@ function buildGeminiRequest(vertical: any, source: Picked): any {
       '2. DO NOT do brand-swap replacements. Competitor or vendor brand names MAY appear in factual technical context (e.g., "Stripe Webhooks deliver POST payloads to your endpoint..."), but the post must NOT frame Yammbo as a competitor or alternative to them. Focus on teaching the concept, not pushing the product.',
       '3. ' + linkPolicyLines.join('\n'),
       '4. HTML must be Astra-theme compatible: ONLY <h2>, <h3>, <p>, <a>, <ul>, <ol>, <li>, <strong>, <em>, <blockquote>, <code>, <pre>. No <img>, no <script>, no inline styles, no custom classes.',
-      '5. Length target: 900–1200 words inside body_html.',
-      '6. Structure: a tight 1-paragraph intro that names the problem this tutorial solves; 3–5 <h2> step sections with action-driven titles (e.g., "Step 1: ..."); use <ol> for sequential steps and <ul> for option lists where it helps comprehension; a closing paragraph with a SOFT call-to-action.',
+      '5. Length target: 1200–1800 words inside body_html.',
+      '6. Structure: a tight 1-paragraph intro that names the problem this tutorial solves; 4–6 <h2> step sections with action-driven titles (e.g., "Step 1: ..."). Make each step section substantive (do NOT pad with filler): the concrete command or action, a short paragraph explaining WHY it matters or how it works, and — where it applies — a verification note (expected output or how to confirm the step succeeded). Use <ol> for sequential steps and <ul> for option lists where it helps comprehension; a closing paragraph with a SOFT call-to-action.',
       '7. CTA: in the closing paragraph, pick the ONE Yammbo product that is most relevant to the topic of THIS tutorial and mention it with its URL in a single helpful sentence. If no Yammbo product fits the topic cleanly, mention the company at https://yammbo.com instead. Available products:',
       productsList,
       '',
@@ -480,8 +480,8 @@ function buildGeminiRequest(vertical: any, source: Picked): any {
       '3. Do NOT frame Yammbo as a "competitor to" or "alternative to" anything; present it as the natural answer to the topic.',
       '4. ' + linkPolicyLines.join('\n'),
       '5. HTML must be Astra-theme compatible: ONLY <h2>, <h3>, <p>, <a>, <ul>, <ol>, <li>, <strong>, <em>, <blockquote>. No <img>, no <script>, no inline styles, no custom classes.',
-      '6. Length target: 900–1200 words inside body_html.',
-      '7. Structure: a strong 1–2 paragraph intro, 3–5 <h2> subsections, a <ul> where it adds value, and a closing paragraph with a soft call-to-action that names ' +
+      '6. Length target: 1000–1500 words inside body_html.',
+      '7. Structure: a strong 1–2 paragraph intro, 4–6 <h2> subsections, a <ul> where it adds value, and a closing paragraph with a soft call-to-action that names ' +
         vertical.brand +
         ' (' +
         vertical.site_url +
@@ -522,12 +522,13 @@ function buildGeminiRequest(vertical: any, source: Picked): any {
   return {
     contents: [{ role: 'user', parts: [{ text: system + '\n\n' + user }] }],
     generationConfig: {
-      // gemini-2.5-flash is a thinking model: by default its reasoning tokens are
-      // billed against maxOutputTokens. On complex tutorials the model spent most
-      // of the budget "thinking" and hit MAX_TOKENS with the JSON still open (only
-      // ~4.8k chars emitted). This is a deterministic rewrite-to-JSON task, so
-      // disable thinking entirely — the whole budget goes to real output.
-      thinkingConfig: { thinkingBudget: 0 },
+      // gemini-2.5-flash is a thinking model: its reasoning tokens are billed
+      // against maxOutputTokens. The original bug was the DEFAULT dynamic budget
+      // (-1) ballooning until it hit MAX_TOKENS with the JSON still open. Cap it
+      // instead of disabling it: a fixed 8192-token budget lets the model plan
+      // structure (richer, better-organized posts) while leaving ~24k tokens of
+      // the 32768 ceiling for visible output — so truncation can't recur.
+      thinkingConfig: { thinkingBudget: 8192 },
       responseMimeType: 'application/json',
       responseSchema: {
         type: 'OBJECT',
