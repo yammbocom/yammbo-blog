@@ -522,6 +522,12 @@ function buildGeminiRequest(vertical: any, source: Picked): any {
   return {
     contents: [{ role: 'user', parts: [{ text: system + '\n\n' + user }] }],
     generationConfig: {
+      // gemini-2.5-flash is a thinking model: by default its reasoning tokens are
+      // billed against maxOutputTokens. On complex tutorials the model spent most
+      // of the budget "thinking" and hit MAX_TOKENS with the JSON still open (only
+      // ~4.8k chars emitted). This is a deterministic rewrite-to-JSON task, so
+      // disable thinking entirely — the whole budget goes to real output.
+      thinkingConfig: { thinkingBudget: 0 },
       responseMimeType: 'application/json',
       responseSchema: {
         type: 'OBJECT',
@@ -547,7 +553,10 @@ function buildGeminiRequest(vertical: any, source: Picked): any {
         ],
       },
       temperature: 0.6,
-      maxOutputTokens: 16384,
+      // 16384 truncated long technical tutorials (HTML + code blocks inflate the
+      // JSON-escaped output): Gemini hit MAX_TOKENS and returned an unclosed JSON
+      // object → parse failure. gemini-2.5-flash caps at 65536; 32768 is ample.
+      maxOutputTokens: 32768,
       topP: 0.9,
     },
   };
@@ -646,14 +655,23 @@ async function liveCheck(url: string, timeoutMs: number): Promise<boolean> {
 }
 
 async function parseGemini(geminiResponse: any): Promise<{ post: PostObj; link_audit: any }> {
-  const text = geminiResponse?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error('Gemini response empty');
+  const cand = geminiResponse?.candidates?.[0];
+  const finishReason = cand?.finishReason;
+  const text = cand?.content?.parts?.[0]?.text;
+  if (!text) throw new Error('Gemini response empty (finish=' + (finishReason || 'unknown') + ')');
   let obj: any;
   try {
     obj = JSON.parse(text);
   } catch {
+    // MAX_TOKENS => the JSON was cut off mid-object (no closing brace). Surface a
+    // diagnostic instead of the generic "No JSON" so the alert is actionable.
+    if (finishReason === 'MAX_TOKENS') {
+      throw new Error(
+        'Gemini output truncated (MAX_TOKENS, ' + String(text).length + ' chars); raise maxOutputTokens'
+      );
+    }
     const m = String(text).match(/\{[\s\S]*\}/);
-    if (!m) throw new Error('No JSON in Gemini output: ' + String(text).slice(0, 300));
+    if (!m) throw new Error('No JSON in Gemini output (finish=' + (finishReason || 'unknown') + '): ' + String(text).slice(0, 300));
     obj = JSON.parse(m[0]);
   }
   const required = ['title', 'slug', 'excerpt', 'body_html', 'focus_keyword', 'meta_description', 'image_search_query'];
