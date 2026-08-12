@@ -132,8 +132,7 @@
       "store.yammbo.com",
       "vcard.yammbo.com",
       "blog.yammbo.com",
-      "tv.yammbo.com",
-      "n8n.yammbo.com"
+      "tv.yammbo.com"
     ],
     "link_policy": {
       "_comment": "Global rules enforced by parse-gemini for ALL verticals + tutorials. External links allowed unless blocked. HEAD-check verifies the link is live before keeping it. YouTube videos are validated via oEmbed against blocked_brand_names_for_youtube.",
