@@ -766,7 +766,7 @@ function buildCoverPrompt(post: PostObj): string {
   ].join(' ');
 }
 
-async function callImagen(env: Env, prompt: string, aspectRatio: string): Promise<string> {
+async function callImagen(env: Env, prompt: string, aspectRatio: string): Promise<{ data: string; ext: string }> {
   const url =
     'https://generativelanguage.googleapis.com/v1beta/models/' + env.IMAGE_MODEL + ':generateContent';
   const resp = await fetch(url, {
@@ -785,14 +785,18 @@ async function callImagen(env: Env, prompt: string, aspectRatio: string): Promis
     const fr = j?.candidates?.[0]?.finishReason || 'unknown';
     throw new Error('Image gen no image (finish=' + fr + '): ' + JSON.stringify(j).slice(0, 250));
   }
-  return img.inlineData.data as string;
+  // gemini-2.5-flash-image answered PNG; gemini-3.1-flash-image answers JPEG.
+  // Name the file after what the model actually returned.
+  const mime = String(img.inlineData.mimeType || 'image/png');
+  const ext = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png';
+  return { data: img.inlineData.data as string, ext };
 }
 
 // ───────────────────────── 8. build Astro markdown ─────────────────────────
-// Ported from Build_markdown.js. Cover is now .png (Nano Banana), not .webp.
-function buildMarkdown(post: PostObj): { md_content: string; md_path: string; image_path: string } {
+// Ported from Build_markdown.js. Cover extension follows the image model's output.
+function buildMarkdown(post: PostObj, imageExt: string): { md_content: string; md_path: string; image_path: string } {
   const slug = post.slug;
-  const imageFileName = slug + '.png';
+  const imageFileName = slug + '.' + imageExt;
   const imagePath = 'public/images/' + imageFileName;
   const mdPath = 'src/content/blog/' + slug + '.md';
 
@@ -989,10 +993,11 @@ async function runPipeline(env: Env, kind: 'blog' | 'tutorial', dryRun: boolean)
   console.log('STEP gemini ok:', post.title, 'links kept', link_audit.kept, '/', link_audit.total);
 
   const coverPrompt = buildCoverPrompt(post);
-  const coverB64 = await callImagen(env, coverPrompt, '16:9');
+  const cover = await callImagen(env, coverPrompt, '16:9');
+  const coverB64 = cover.data;
   console.log('STEP cover ok bytes:', coverB64.length);
 
-  const { md_content, md_path, image_path } = buildMarkdown(post);
+  const { md_content, md_path, image_path } = buildMarkdown(post, cover.ext);
 
   const result: any = {
     kind,

@@ -30,8 +30,8 @@ id = "0401f65b617d4cc492eccbb1ecc6da5f"
 [vars]
 # Gemini text rewrite (verified from the n8n "Call Gemini" HTTP node).
 GEMINI_MODEL = "gemini-2.5-flash"
-# Cover image: Gemini 2.5 Flash Image ("Nano Banana"), :generateContent.
-IMAGE_MODEL = "gemini-2.5-flash-image"
+# Cover image: Gemini 3.1 Flash Image ("Nano Banana 2"), :generateContent. gemini-2.5-flash-image shuts down 2026-10-02.
+IMAGE_MODEL = "gemini-3.1-flash-image"
 GITHUB_REPO = "yammbocom/blog.yammbo.com"
 GITHUB_BRANCH = "main"
 TELEGRAM_CHAT_ID = "7906560887"
