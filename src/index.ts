@@ -753,43 +753,101 @@ async function parseGemini(geminiResponse: any): Promise<{ post: PostObj; link_a
 // ───────────────────────── 7. Nano Banana cover (16:9) ─────────────────────
 // Replaces the old Pexels+canvas+sharp image-service. Clean conceptual
 // illustration of the article topic — NO title text (Astro renders the title as
-// the page H1; baking it in risked garbled words). Only the "YAMMBO" wordmark. PNG.
-function buildCoverPrompt(post: PostObj): string {
+// the page H1; baking it in risked garbled words). Only the "YAMMBO" wordmark.
+//
+// Style is anchored with reference images, not words. gemini-3.1-flash-image
+// given the old text-only prompt drifted into a busy retro-flat look and even
+// drew words ("BOOM!"); fed 3 covers that gemini-2.5-flash-image made, it keeps
+// the house style (centered subject, soft gradient, lots of air). The refs live
+// in KV (style-ref:*, JPEG base64) so the cover never depends on fetching the
+// blog itself. No refs in KV -> the text-only prompt, as before.
+const STYLE_REF_PREFIX = 'style-ref:';
+const STYLE_REFS_PER_COVER = 3;
+
+type ImagePart = { inlineData: { mimeType: string; data: string } };
+
+async function loadStyleRefs(env: Env): Promise<ImagePart[]> {
+  try {
+    const list = await env.BLOG_DEDUPE.list({ prefix: STYLE_REF_PREFIX });
+    // Rotate the refs so one reference's motif (e.g. hexagons) doesn't end up on every cover.
+    const keys = list.keys.map((k) => k.name).sort(() => Math.random() - 0.5).slice(0, STYLE_REFS_PER_COVER);
+    const vals = await Promise.all(keys.map((k) => env.BLOG_DEDUPE.get(k)));
+    return vals.filter((v): v is string => !!v).map((data) => ({ inlineData: { mimeType: 'image/jpeg', data } }));
+  } catch (e) {
+    console.log('STEP style refs unavailable:', String(e));
+    return [];
+  }
+}
+
+function buildCoverPrompt(post: PostObj, withRefs: boolean): string {
   const topic = post.image_search_query || post.focus_keyword || post.title;
+  const style = withRefs
+    ? [
+        'Wide 16:9 editorial cover illustration for a blog article about "' + topic + '".',
+        'Match the visual STYLE of the reference images: one clear, centered hero subject that tells the topic at a glance; semi-flat vector illustration with soft gradients and gentle 3D shading; a smooth, softly graded background in one light hue; plenty of calm negative space around the subject; at most a few small floating accent icons. Polished, friendly and modern, like a well-designed tech product blog.',
+        'Only borrow the style — do NOT copy the objects, layout or colors of the references literally; the subject must come from the topic.',
+      ]
+    : [
+        'Wide 16:9 editorial cover illustration for a blog article.',
+        'Subject: a clean, modern, conceptual illustration of the topic "' + topic + '".',
+        'Style: professional flat/vector editorial illustration, generous negative space, a tasteful limited color palette, soft depth, looks designed by a human art director — NOT an AI-stock-photo look.',
+      ];
   return [
-    'Wide 16:9 editorial cover illustration for a blog article.',
-    'Subject: a clean, modern, conceptual illustration of the topic "' + topic + '".',
-    'Style: professional flat/vector editorial illustration, generous negative space, a tasteful limited color palette, soft depth, looks designed by a human art director — NOT an AI-stock-photo look.',
-    'No title text and no headline anywhere in the image — the illustration must stand on its own with no sentences, captions, or article title rendered.',
+    ...style,
+    'No title text and no headline anywhere in the image — no words, captions, onomatopoeia, labels or letters on objects or screens.',
     'Branding: the ONLY text in the entire image is the wordmark "YAMMBO", small and tasteful in one corner, all caps, clean sans-serif, correctly spelled.',
-    'No watermarks, no UI chrome, no photographic faces, no lorem-ipsum, no gibberish text, no labels. Output a single polished cover image.',
+    'No watermarks, no UI chrome, no photographic faces, no lorem-ipsum, no gibberish text. Output a single polished cover image.',
   ].join(' ');
 }
 
-async function callImagen(env: Env, prompt: string, aspectRatio: string): Promise<{ data: string; ext: string }> {
+// gemini-3.1-flash-image intermittently answers finishReason=OTHER with no image
+// (2 of 4 identical calls on 2026-09-27; it cost that day's 15:00 post). The
+// same prompt succeeds on the next call, so retry before failing the run.
+const IMAGE_ATTEMPTS = 3;
+
+async function callImagen(
+  env: Env,
+  prompt: string,
+  aspectRatio: string,
+  refs: ImagePart[] = []
+): Promise<{ data: string; ext: string }> {
   const url =
     'https://generativelanguage.googleapis.com/v1beta/models/' + env.IMAGE_MODEL + ':generateContent';
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { responseModalities: ['IMAGE'], imageConfig: { aspectRatio } },
-    }),
-  });
-  if (!resp.ok) throw new Error('Image gen HTTP ' + resp.status + ': ' + (await resp.text()).slice(0, 300));
-  const j: any = await resp.json();
-  const parts = j?.candidates?.[0]?.content?.parts || [];
-  const img = parts.find((p: any) => p?.inlineData?.data);
-  if (!img) {
-    const fr = j?.candidates?.[0]?.finishReason || 'unknown';
-    throw new Error('Image gen no image (finish=' + fr + '): ' + JSON.stringify(j).slice(0, 250));
+  let lastErr = '';
+  let attempts = 0;
+  for (let attempt = 1; attempt <= IMAGE_ATTEMPTS; attempt++) {
+    attempts = attempt;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+      body: JSON.stringify({
+        contents: [{ parts: [...refs, { text: prompt }] }],
+        generationConfig: { responseModalities: ['IMAGE'], imageConfig: { aspectRatio } },
+      }),
+    });
+    if (!resp.ok) {
+      lastErr = 'Image gen HTTP ' + resp.status + ': ' + (await resp.text()).slice(0, 300);
+      // 4xx other than rate limiting won't fix itself on retry.
+      if (resp.status < 500 && resp.status !== 429) break;
+    } else {
+      const j: any = await resp.json();
+      const parts = j?.candidates?.[0]?.content?.parts || [];
+      const img = parts.find((p: any) => p?.inlineData?.data);
+      if (img) {
+        // gemini-2.5-flash-image answered PNG; gemini-3.1-flash-image answers JPEG.
+        // Name the file after what the model actually returned.
+        const mime = String(img.inlineData.mimeType || 'image/png');
+        const ext = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png';
+        if (attempt > 1) console.log('STEP image ok on attempt', attempt);
+        return { data: img.inlineData.data as string, ext };
+      }
+      const fr = j?.candidates?.[0]?.finishReason || 'unknown';
+      lastErr = 'Image gen no image (finish=' + fr + '): ' + JSON.stringify(j).slice(0, 250);
+    }
+    console.log('STEP image attempt', attempt, 'failed:', lastErr.slice(0, 200));
+    if (attempt < IMAGE_ATTEMPTS) await new Promise((r) => setTimeout(r, 2000 * attempt));
   }
-  // gemini-2.5-flash-image answered PNG; gemini-3.1-flash-image answers JPEG.
-  // Name the file after what the model actually returned.
-  const mime = String(img.inlineData.mimeType || 'image/png');
-  const ext = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png';
-  return { data: img.inlineData.data as string, ext };
+  throw new Error(lastErr + ' [after ' + attempts + ' attempt' + (attempts === 1 ? '' : 's') + ']');
 }
 
 // ───────────────────────── 8. build Astro markdown ─────────────────────────
@@ -992,8 +1050,10 @@ async function runPipeline(env: Env, kind: 'blog' | 'tutorial', dryRun: boolean)
   const { post, link_audit } = await parseGemini(geminiResponse);
   console.log('STEP gemini ok:', post.title, 'links kept', link_audit.kept, '/', link_audit.total);
 
-  const coverPrompt = buildCoverPrompt(post);
-  const cover = await callImagen(env, coverPrompt, '16:9');
+  const styleRefs = await loadStyleRefs(env);
+  console.log('STEP style refs:', styleRefs.length);
+  const coverPrompt = buildCoverPrompt(post, styleRefs.length > 0);
+  const cover = await callImagen(env, coverPrompt, '16:9', styleRefs);
   const coverB64 = cover.data;
   console.log('STEP cover ok bytes:', coverB64.length);
 
