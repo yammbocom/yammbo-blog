@@ -925,9 +925,43 @@ async function gh(env: Env, method: string, path: string, body?: any): Promise<a
   }
 }
 
+const AUTO_POST_MARK = 'Auto-posted by yammbo-blog worker';
+
+// Cloudflare fired the same cron twice: 2026-10-13 21:00 published two near
+// identical tutorials 17 s apart, and 2026-10-14 15:00 the twin lost the ref
+// race (422 not a fast forward) and paged as a failure. KV is eventually
+// consistent, so it can't arbitrate; the branch on GitHub can. A run whose slot
+// already has an auto-post on main is the twin and stands down.
+class DuplicateRun extends Error {
+  constructor(public siblingSha: string) {
+    super('duplicate invocation: slot already published by ' + siblingSha.slice(0, 7));
+  }
+}
+
+function isSiblingCommit(c: any, sinceMs: number): boolean {
+  return String(c?.message || '').includes(AUTO_POST_MARK) && Date.parse(c?.committer?.date || '') >= sinceMs;
+}
+
+// The ref tip is checked first: it is read in the same breath as the ref, so a
+// twin that moved main before we read it is caught here, and one that moves it
+// after makes our PATCH fail with 422 and land in the re-check. The commit list
+// is only the fallback for a tip that is no longer the twin's.
+async function siblingPublished(env: Env, sinceMs: number, tip?: { sha: string; commit: any }): Promise<string | null> {
+  if (tip && isSiblingCommit(tip.commit, sinceMs)) return tip.sha;
+  const commits = await gh(
+    env,
+    'GET',
+    '/repos/' + env.GITHUB_REPO + '/commits?sha=' + env.GITHUB_BRANCH +
+      '&since=' + new Date(sinceMs).toISOString() + '&per_page=10'
+  );
+  const hit = (commits as any[]).find((c) => String(c?.commit?.message || '').includes(AUTO_POST_MARK));
+  return hit ? hit.sha : null;
+}
+
 async function commitToGitHub(
   env: Env,
-  args: { md_path: string; md_content: string; image_path: string; image_base64: string; post_title: string; slug: string }
+  args: { md_path: string; md_content: string; image_path: string; image_base64: string; post_title: string; slug: string },
+  slotStartMs?: number
 ): Promise<{ commit_sha: string; commit_url: string; post_url: string }> {
   const REPO = env.GITHUB_REPO;
   const BRANCH = env.GITHUB_BRANCH;
@@ -938,6 +972,11 @@ async function commitToGitHub(
 
   const parentCommit = await gh(env, 'GET', '/repos/' + REPO + '/git/commits/' + parentSha);
   const parentTreeSha = parentCommit.tree.sha;
+
+  if (slotStartMs !== undefined) {
+    const sibling = await siblingPublished(env, slotStartMs, { sha: parentSha, commit: parentCommit });
+    if (sibling) throw new DuplicateRun(sibling);
+  }
 
   const mdBlob = await gh(env, 'POST', '/repos/' + REPO + '/git/blobs', {
     content: md_content,
@@ -956,17 +995,29 @@ async function commitToGitHub(
     ],
   });
 
-  const commitMsg = 'Publish: ' + post_title + ' (' + slug + ')\n\nAuto-posted by yammbo-blog worker';
+  const commitMsg = 'Publish: ' + post_title + ' (' + slug + ')\n\n' + AUTO_POST_MARK;
   const newCommit = await gh(env, 'POST', '/repos/' + REPO + '/git/commits', {
     message: commitMsg,
     tree: tree.sha,
     parents: [parentSha],
   });
 
-  await gh(env, 'PATCH', '/repos/' + REPO + '/git/refs/heads/' + BRANCH, {
-    sha: newCommit.sha,
-    force: false,
-  });
+  try {
+    await gh(env, 'PATCH', '/repos/' + REPO + '/git/refs/heads/' + BRANCH, {
+      sha: newCommit.sha,
+      force: false,
+    });
+  } catch (e: any) {
+    // Lost the race to the twin between reading the ref and moving it.
+    if (slotStartMs !== undefined && / -> 422 /.test(String(e?.message))) {
+      const now = await gh(env, 'GET', '/repos/' + REPO + '/git/refs/heads/' + BRANCH);
+      const tipSha = now.object.sha;
+      const tip = await gh(env, 'GET', '/repos/' + REPO + '/git/commits/' + tipSha);
+      const sibling = await siblingPublished(env, slotStartMs, { sha: tipSha, commit: tip });
+      if (sibling) throw new DuplicateRun(sibling);
+    }
+    throw e;
+  }
 
   return {
     commit_sha: newCommit.sha,
@@ -1025,7 +1076,7 @@ async function persistDedupe(env: Env, sd: DedupeDoc, source: Picked, post: Post
 }
 
 // ───────────────────────── main pipeline ─────────────────────────
-async function runPipeline(env: Env, kind: 'blog' | 'tutorial', dryRun: boolean): Promise<any> {
+async function runPipeline(env: Env, kind: 'blog' | 'tutorial', dryRun: boolean, slotStartMs?: number): Promise<any> {
   const { verticalKey, vertical } = pickVertical(kind);
   console.log('STEP pick', kind, verticalKey);
 
@@ -1077,14 +1128,28 @@ async function runPipeline(env: Env, kind: 'blog' | 'tutorial', dryRun: boolean)
     return result;
   }
 
-  const commit = await commitToGitHub(env, {
-    md_path,
-    md_content,
-    image_path,
-    image_base64: coverB64,
-    post_title: post.title,
-    slug: post.slug,
-  });
+  let commit;
+  try {
+    commit = await commitToGitHub(
+      env,
+      {
+        md_path,
+        md_content,
+        image_path,
+        image_base64: coverB64,
+        post_title: post.title,
+        slug: post.slug,
+      },
+      slotStartMs
+    );
+  } catch (e) {
+    // The twin already published and persisted its own dedupe entry.
+    if (e instanceof DuplicateRun) {
+      console.log('STEP duplicate:', e.message);
+      return { skip: true, duplicate: true, reason: e.message, kind, vertical: verticalKey };
+    }
+    throw e;
+  }
   console.log('STEP committed:', commit.commit_url);
 
   await persistDedupe(env, sd, picked, post, verticalKey);
@@ -1124,8 +1189,8 @@ export default {
     // budget; the pipeline (feeds + Gemini + image + GitHub) is long.
     const kind = kindForCron(event);
     try {
-      const r = await runPipeline(env, kind, false);
-      if (r.skip) {
+      const r = await runPipeline(env, kind, false, event.scheduledTime);
+      if (r.skip && !r.duplicate) {
         await alertTelegram(
           env,
           '🟡 <b>BLOG SKIP</b> (' + kind + '/' + r.vertical + ')\nreason: ' + r.reason
