@@ -169,11 +169,12 @@ function pickVertical(kind: 'blog' | 'tutorial'): { verticalKey: string; vertica
   const dow = String(now.getUTCDay());
   let verticalKey = cfg.schedule[dow];
   if (verticalKey === 'top') {
-    // Sun+Sat: cycle through verticals deterministically by week. Exclude
-    // 'tutorials' (daily-only workflow).
-    const week = Math.floor(now.getTime() / (1000 * 60 * 60 * 24 * 7));
+    // Fri+Sat+Sun: cycle through verticals deterministically by day, so the
+    // three consecutive 'top' days get different verticals (a per-week index
+    // gave all three the same one). Exclude 'tutorials' (daily-only workflow).
+    const day = Math.floor(now.getTime() / (1000 * 60 * 60 * 24));
     const keys = Object.keys(cfg.verticals).filter((k) => k !== 'tutorials');
-    verticalKey = keys[week % keys.length];
+    verticalKey = keys[day % keys.length];
   }
   const vertical = cfg.verticals[verticalKey];
   if (!vertical) throw new Error('No vertical config for ' + verticalKey);
