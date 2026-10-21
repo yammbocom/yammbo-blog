@@ -430,7 +430,6 @@ function buildGeminiRequest(vertical: any, source: Picked): any {
       '   - Yammbo Web — AI-powered website builder — https://web.yammbo.com',
       '   - Yammbo POS — restaurant point-of-sale + online ordering — https://pos.yammbo.com',
       '   - Yammbo Store — online store builder — https://store.yammbo.com',
-      '   - Yammbo Vcard — digital business cards + bio links — https://vcard.yammbo.com',
     ].join('\n');
 
     system = [
@@ -469,7 +468,7 @@ function buildGeminiRequest(vertical: any, source: Picked): any {
 
     system = [
       'ROLE: You are a senior staff writer for the Yammbo SaaS company blog (blog.yammbo.com).',
-      'Yammbo runs 5 products: Yammbo Music (music streaming), Yammbo Web (AI-powered website builder), Yammbo POS (restaurant point-of-sale + online ordering), Yammbo Store (online store builder), Yammbo Vcard (digital business cards + bio links).',
+      'Yammbo runs 4 products: Yammbo Music (music streaming), Yammbo Web (AI-powered website builder), Yammbo POS (restaurant point-of-sale + online ordering), Yammbo Store (online store builder).',
       '',
       'TASK: Completely rewrite the supplied source article as an original blog post in clear American English (en_US). The post must read as native Yammbo content — never as a rewrite or translation.',
       '',

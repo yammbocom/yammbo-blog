@@ -1,14 +1,14 @@
 {
   "_comment": "Source of truth for blog-publish-daily. Edit here, then re-import workflow. Brand names replace source mentions in published content.",
-  "_updated": "2026-05-13",
+  "_updated": "2026-10-21",
   "schedule": {
-    "_comment": "Day-of-week → vertical for blog-publish-daily. 0=Sun, 1=Mon, ..., 6=Sat. Sun+Sat = 'top' cycles through 5 verticals by week (excludes 'tutorials'). Tutorials runs daily via the separate blog-tutorial-daily workflow at 21:00 UTC.",
+    "_comment": "Day-of-week → vertical for blog-publish-daily. 0=Sun, 1=Mon, ..., 6=Sat. Sun+Fri+Sat = 'top' cycles through 4 verticals (music, web, pos, store) by week (excludes 'tutorials'). Tutorials runs daily via the separate blog-tutorial-daily workflow at 21:00 UTC.",
     "0": "top",
     "1": "music",
     "2": "web",
     "3": "pos",
     "4": "store",
-    "5": "vcard",
+    "5": "top",
     "6": "top"
   },
   "verticals": {
@@ -74,20 +74,6 @@
         "https://www.ecwid.com/blog/feed"
       ]
     },
-    "vcard": {
-      "brand": "Yammbo Vcard",
-      "site_url": "https://vcard.yammbo.com",
-      "wp_category_id": 10,
-      "wp_category_name": "Bio Links",
-      "feeds": [
-        "https://buffer.com/resources/rss/",
-        "https://blog.hootsuite.com/feed/",
-        "https://sproutsocial.com/insights/feed/",
-        "https://influencermarketinghub.com/feed/",
-        "https://www.socialmediaexaminer.com/feed/",
-        "https://blog.hubspot.com/marketing/rss.xml"
-      ]
-    },
     "tutorials": {
       "_comment": "Saturday slot. prompt_mode=tutorial: educational, no brand-swap. LLM picks the most relevant Yammbo product for the closing CTA based on the topic. Mix: VPS/hosting, SEO, dev, fintech, automation, web perf.",
       "brand": "Yammbo",
@@ -130,7 +116,6 @@
       "web.yammbo.com",
       "pos.yammbo.com",
       "store.yammbo.com",
-      "vcard.yammbo.com",
       "blog.yammbo.com",
       "tv.yammbo.com"
     ],
@@ -232,8 +217,7 @@
       "Spotify, Apple Music, YouTube Music, Tidal, Deezer, SoundCloud, Bandcamp, Audiomack": "Yammbo Music",
       "Wix, Squarespace, Webflow, Framer, Hostinger Builder, 10Web, Elementor, Divi, Carrd": "Yammbo Web",
       "Toast, Square for Restaurants, Lightspeed, Clover, TouchBistro, Revel, Upserve, 7shifts": "Yammbo POS",
-      "Shopify, BigCommerce, WooCommerce, Ecwid, Sellfy, Square Online": "Yammbo Store",
-      "Linktree, Beacons, HiHello, Popl, Mobilo, Carrd (link-in-bio), Bio.fm": "Yammbo Vcard"
+      "Shopify, BigCommerce, WooCommerce, Ecwid, Sellfy, Square Online": "Yammbo Store"
     }
   }
 }
