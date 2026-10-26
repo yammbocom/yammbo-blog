@@ -1162,11 +1162,64 @@ async function runPipeline(env: Env, kind: 'blog' | 'tutorial', dryRun: boolean,
 }
 
 // Map a cron / UTC hour to the run kind. 15:00 -> blog, 21:00 -> tutorial.
-function kindForCron(event: ScheduledController): 'blog' | 'tutorial' {
+// Each slot has its first run plus two retries. Cron invocations run on
+// whatever Cloudflare machine is underutilized, and Gemini answers 400 "User
+// location is not supported" when that machine sits in a region Google does not
+// serve (2026-10-26 15:00 lost the blog post that way). A later invocation
+// usually lands elsewhere, so a failed slot is retried 30 and 60 min later.
+// Placement hints cannot pin this: they only apply to fetch handlers.
+const SLOTS: Record<string, { kind: 'blog' | 'tutorial'; hour: number; attempt: number; last: boolean }> = {
+  '0 15 * * *': { kind: 'blog', hour: 15, attempt: 1, last: false },
+  '30 15 * * *': { kind: 'blog', hour: 15, attempt: 2, last: false },
+  '0 16 * * *': { kind: 'blog', hour: 15, attempt: 3, last: true },
+  '0 21 * * *': { kind: 'tutorial', hour: 21, attempt: 1, last: false },
+  '30 21 * * *': { kind: 'tutorial', hour: 21, attempt: 2, last: false },
+  '0 22 * * *': { kind: 'tutorial', hour: 21, attempt: 3, last: true },
+};
+
+function slotForCron(event: ScheduledController) {
   const cron = (event as any).cron as string | undefined;
-  if (cron === '0 21 * * *') return 'tutorial';
-  if (cron === '0 15 * * *') return 'blog';
-  return new Date().getUTCHours() >= 21 ? 'tutorial' : 'blog';
+  const s = cron ? SLOTS[cron] : undefined;
+  if (!s) {
+    // A cron missing from SLOTS (added to wrangler.toml only): one attempt that
+    // always reports, with its own state key so it cannot touch a real slot.
+    const kind: 'blog' | 'tutorial' = new Date(event.scheduledTime).getUTCHours() >= 21 ? 'tutorial' : 'blog';
+    return { kind, hour: -1, attempt: 1, last: true, startMs: event.scheduledTime, stateKey: 'slot:adhoc:' + event.scheduledTime };
+  }
+  const d = new Date(event.scheduledTime);
+  const startMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), s.hour, 0, 0);
+  const day = new Date(startMs).toISOString().slice(0, 10);
+  return { ...s, startMs, stateKey: 'slot:' + s.kind + ':' + day };
+}
+
+// Outcome of the slot's previous attempts, so retries know whether to run.
+// KV is eventually consistent, but 30 min apart is far beyond its lag; the
+// GitHub check below still guards against double publishing.
+interface SlotState {
+  status: 'failed' | 'skip';
+  errors: string[];
+}
+
+async function readSlot(env: Env, key: string): Promise<SlotState | null> {
+  try {
+    return (await env.BLOG_DEDUPE.get<SlotState>(key, 'json')) || null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeSlot(env: Env, key: string, st: SlotState): Promise<void> {
+  try {
+    await env.BLOG_DEDUPE.put(key, JSON.stringify(st), { expirationTtl: 3 * 86400 });
+  } catch (e) {
+    console.log('STEP slot state write failed:', String(e).slice(0, 200));
+  }
+}
+
+// Telegram parses these alerts as HTML: dynamic text (error bodies, titles)
+// must be escaped or one stray '<' makes the API reject the whole alert.
+function tgEsc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 async function alertTelegram(env: Env, text: string): Promise<void> {
@@ -1187,20 +1240,70 @@ export default {
   async scheduled(event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     // await (not waitUntil): the scheduled invocation gets the full duration
     // budget; the pipeline (feeds + Gemini + image + GitHub) is long.
-    const kind = kindForCron(event);
+    const slot = slotForCron(event);
+    const { kind } = slot;
+    let prev: SlotState | null = null;
+    if (slot.attempt > 1) {
+      prev = await readSlot(env, slot.stateKey);
+      // The first run found nothing new to publish (already reported): retrying
+      // would only repeat the skip.
+      if (prev?.status === 'skip') return;
+      try {
+        if (await siblingPublished(env, slot.startMs)) {
+          console.log('STEP retry: slot already published');
+          return;
+        }
+      } catch (e) {
+        console.log('STEP retry: could not check GitHub, running anyway:', String(e).slice(0, 200));
+      }
+    }
     try {
-      const r = await runPipeline(env, kind, false, event.scheduledTime);
+      const r = await runPipeline(env, kind, false, slot.startMs);
       if (r.skip && !r.duplicate) {
+        await writeSlot(env, slot.stateKey, { status: 'skip', errors: prev?.errors || [] });
+        // Attempt 1 always reports a skip; a retry only if an earlier attempt had
+        // failed (otherwise the slot would end with no alert at all).
+        if (slot.attempt === 1 || prev?.status === 'failed') {
+          await alertTelegram(
+            env,
+            '🟡 <b>BLOG SKIP</b> (' + kind + '/' + r.vertical + ')\nreason: ' + tgEsc(String(r.reason)) +
+              (prev?.errors?.length ? '\nfallo anterior: ' + tgEsc(prev.errors[prev.errors.length - 1].slice(0, 200)) : '')
+          );
+        }
+      } else if (!r.skip && slot.attempt > 1) {
         await alertTelegram(
           env,
-          '🟡 <b>BLOG SKIP</b> (' + kind + '/' + r.vertical + ')\nreason: ' + r.reason
+          '🟢 <b>BLOG PUBLICADO EN EL REINTENTO ' + slot.attempt + '</b> (' + kind + ')\n' +
+            tgEsc(String(r.post_url || r.title || '')) +
+            (prev?.errors?.length ? '\nfallo anterior: ' + tgEsc(prev.errors[prev.errors.length - 1].slice(0, 200)) : '')
         );
       }
     } catch (e: any) {
-      await alertTelegram(
-        env,
-        '🟠 <b>BLOG PUBLISH FAILED</b> (' + kind + ')\n' + String(e?.message || e).slice(0, 400)
-      );
+      const msg = String(e?.message || e);
+      const errors = [...(prev?.errors || []), msg.slice(0, 300)];
+      await writeSlot(env, slot.stateKey, { status: 'failed', errors });
+      // Failed AFTER the commit landed (dedupe KV write, or a PATCH that applied
+      // but answered with an error): the retries would see the post and stand
+      // down quietly, so report it now.
+      let landed = false;
+      try {
+        landed = !!(await siblingPublished(env, slot.startMs));
+      } catch {
+        // cannot tell: fall through to the normal retry/last-attempt handling
+      }
+      if (landed) {
+        await alertTelegram(
+          env,
+          '🟠 <b>BLOG: el post del turno está publicado, pero un intento falló</b> (' + kind + ')\n' + tgEsc(msg.slice(0, 400))
+        );
+      } else if (slot.last) {
+        await alertTelegram(
+          env,
+          '🟠 <b>BLOG PUBLISH FAILED</b> (' + kind + ') tras ' + slot.attempt + ' intentos\n' + tgEsc(msg.slice(0, 400))
+        );
+      } else {
+        console.log('STEP attempt', slot.attempt, 'failed, will retry:', msg.slice(0, 200));
+      }
     }
   },
 

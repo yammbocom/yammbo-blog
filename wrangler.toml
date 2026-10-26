@@ -17,7 +17,8 @@ tail_consumers = [{ service = "yammbo-tail" }]
 # Cutover done 2026-05-31: n8n blogPubDaily01 + blogTutorialDaily01 + imageGenSub01
 # set active=0; this Worker now owns the daily blog + tutorial publishing.
 [triggers]
-crons = ["0 15 * * *", "0 21 * * *"]
+# Each slot is retried 30 and 60 min later if it failed (see SLOTS in src/index.ts).
+crons = ["0 15 * * *", "30 15 * * *", "0 16 * * *", "0 21 * * *", "30 21 * * *", "0 22 * * *"]
 
 # Dedupe state. Single JSON doc under key "blog-publish-daily" holding
 # published_titles[] + published_links[] (cap 2000). Blog AND tutorial share it.
