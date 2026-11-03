@@ -23,6 +23,7 @@
  * commit and the KV mutation, and returns the cover as base64 for preview.
  */
 import CFG from './feeds-config.json';
+import { explainError, explainSkip, skipAction } from './explain';
 
 export interface Env {
   BLOG_DEDUPE: KVNamespace;
@@ -1192,6 +1193,11 @@ function slotForCron(event: ScheduledController) {
   return { ...s, startMs, stateKey: 'slot:' + s.kind + ':' + day };
 }
 
+// "el turno de las 15:00 UTC (blog)" — for the impact line of the alerts.
+function slotLabel(slot: { kind: string; hour: number }): string {
+  return (slot.hour >= 0 ? 'las ' + slot.hour + ':00 UTC' : 'este turno') + ' (' + (slot.kind === 'tutorial' ? 'tutorial' : 'blog') + ')';
+}
+
 // Outcome of the slot's previous attempts, so retries know whether to run.
 // KV is eventually consistent, but 30 min apart is far beyond its lag; the
 // GitHub check below still guards against double publishing.
@@ -1267,7 +1273,10 @@ export default {
           await alertTelegram(
             env,
             '🟡 <b>BLOG SKIP</b> (' + kind + '/' + r.vertical + ')\nreason: ' + tgEsc(String(r.reason)) +
-              (prev?.errors?.length ? '\nfallo anterior: ' + tgEsc(prev.errors[prev.errors.length - 1].slice(0, 200)) : '')
+              (prev?.errors?.length ? '\nfallo anterior: ' + tgEsc(prev.errors[prev.errors.length - 1].slice(0, 200)) : '') +
+              '\n<b>Por qué:</b> ' + tgEsc(explainSkip(String(r.reason))) +
+              '\n<b>Impacto:</b> hoy no sale el post de ' + slotLabel(slot) + ' en blog.yammbo.com; no se reintenta.' +
+              '\n<b>Qué hacer:</b> ' + tgEsc(skipAction(String(r.reason)))
           );
         }
       } else if (!r.skip && slot.attempt > 1) {
@@ -1294,12 +1303,18 @@ export default {
       if (landed) {
         await alertTelegram(
           env,
-          '🟠 <b>BLOG: el post del turno está publicado, pero un intento falló</b> (' + kind + ')\n' + tgEsc(msg.slice(0, 400))
+          '🟠 <b>BLOG: el post del turno está publicado, pero un intento falló</b> (' + kind + ')\n' + tgEsc(msg.slice(0, 400)) +
+            '\n<b>Impacto:</b> ninguno para los lectores: el post de ' + slotLabel(slot) + ' ya está en el repo del blog.' +
+            '\n<b>Qué hacer:</b> comprobar que se ve en blog.yammbo.com; si sale dos veces, borrar el duplicado del repo.'
         );
       } else if (slot.last) {
+        const why = explainError(msg);
         await alertTelegram(
           env,
-          '🟠 <b>BLOG PUBLISH FAILED</b> (' + kind + ') tras ' + slot.attempt + ' intentos\n' + tgEsc(msg.slice(0, 400))
+          '🟠 <b>BLOG PUBLISH FAILED</b> (' + kind + ') tras ' + slot.attempt + ' intentos\n' + tgEsc(msg.slice(0, 400)) +
+            '\n<b>Por qué suele pasar:</b> ' + tgEsc(why.why) +
+            '\n<b>Impacto:</b> hoy no sale el post de ' + slotLabel(slot) + ' en blog.yammbo.com (no hay más reintentos).' +
+            '\n<b>Qué hacer:</b> ' + tgEsc(why.action)
         );
       } else {
         console.log('STEP attempt', slot.attempt, 'failed, will retry:', msg.slice(0, 200));
